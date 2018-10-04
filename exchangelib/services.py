@@ -35,7 +35,7 @@ from .errors import EWSWarning, TransportError, SOAPError, ErrorTimeoutExpired, 
 from .ewsdatetime import EWSDateTime, NaiveDateTimeNotAllowed
 from .transport import wrap, extra_headers
 from .util import chunkify, create_element, add_xml_child, get_xml_attr, to_xml, post_ratelimited, \
-    xml_to_str, set_xml_value, peek, xml_text_to_value, SOAPNS, TNS, MNS, ENS, ParseError
+    xml_to_str, set_xml_value, peek, xml_text_to_value, SOAPNS, TNS, MNS, ENS, ParseError, text_log
 from .version import EXCHANGE_2010, EXCHANGE_2010_SP2, EXCHANGE_2013, EXCHANGE_2013_SP1
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ class EWSService(object):
         while True:
             try:
                 # Send the request, get the response and do basic sanity checking on the SOAP XML
+                #text_log('_get_elements')
                 response = self._get_response_xml(payload=payload)
                 # Read the XML and throw any general EWS error messages. Return a generator over the result elements
                 return self._get_elements_in_response(response=response)
@@ -145,6 +146,7 @@ class EWSService(object):
         api_versions = [hint.api_version] + [v for v in API_VERSIONS if v != hint.api_version]
         for api_version in api_versions:
             log.debug('Trying API version %s for account %s', api_version, account)
+            text_log('wrap used here ' + str(payload.tag.split('}')[1]))
             r, session = post_ratelimited(
                 protocol=self.protocol,
                 session=self.protocol.get_session(),
@@ -155,10 +157,12 @@ class EWSService(object):
             self.protocol.release_session(session)
             try:
                 soap_response_payload = to_xml(r.content)
+                #text_log('responce: ' + str(soap_response_payload))
             except ParseError as e:
                 raise SOAPError('Bad SOAP response: %s' % e)
             try:
                 res = self._get_soap_payload(soap_response=soap_response_payload)
+                text_log('responce:',str(len(res)), str(res[0].tag.split('}')[1]))
             except ErrorInvalidServerVersion:
                 # The guessed server version is wrong. Try the next version
                 log.debug('API version %s was invalid', api_version)
@@ -357,6 +361,7 @@ class PagingEWSMixIn(EWSService):
             kwargs['offset'] = common_next_offset
             payload = payload_func(**kwargs)
             try:
+                text_log('PagingEWSMixIn')
                 response = self._get_response_xml(payload=payload)
             except ErrorServerBusy as e:
                 log.debug('Got ErrorServerBusy (back off %s seconds)', e.back_off)
@@ -1472,6 +1477,7 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
             kwargs['offset'] = item_count
             payload = payload_func(**kwargs)
             try:
+                text_log('_paged_call')
                 response = self._get_response_xml(payload=payload)
             except ErrorServerBusy as e:
                 log.debug('Got ErrorServerBusy (back off %s seconds)', e.back_off)

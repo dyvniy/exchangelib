@@ -619,3 +619,8 @@ def _raise_response_errors(response, protocol, log_msg, log_vals):
         raise response.headers['TimeoutException']
     # This could be anything. Let higher layers handle this. Add full context for better debugging.
     raise TransportError(str('Unknown failure\n') + log_msg % log_vals)
+
+#============ NV ===============
+
+def text_log(*args):
+    print(*args)
