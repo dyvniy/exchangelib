@@ -474,6 +474,7 @@ class TimeZoneTransition(EWSElement):
         return res
 
     def clean(self, version=None):
+        # pylint: disable=access-member-before-definition
         super(TimeZoneTransition, self).clean(version=version)
         if self.occurrence == -1:
             # See from_xml()
@@ -598,7 +599,12 @@ class TimeZone(EWSElement):
         for transition in transitiongroup:
             period = periods[transition['to']]
             if len(transition.keys()) == 1:
-                # This is a simple transition to STD time. That cannot be represented by this class
+                # This is a simple transition representing a timezone with no DST. Some servers don't accept TimeZone
+                # elements without a STD and DST element (see issue #488). Return StandardTime and DaylightTime objects
+                # with dummy values and 0 bias - this satisfies the broken servers and hopefully doesn't break the
+                # well-behaving servers.
+                standard_time = StandardTime(bias=0, time=datetime.time(0), occurrence=1, iso_month=1, weekday=1)
+                daylight_time = DaylightTime(bias=0, time=datetime.time(0), occurrence=5, iso_month=12, weekday=7)
                 continue
             # 'offset' is the time of day to transition, as timedelta since midnight. Must be a reasonable value
             if not datetime.timedelta(0) <= transition['offset'] < datetime.timedelta(days=1):
@@ -656,7 +662,7 @@ class FreeBusyView(EWSElement):
             Choice('None'), Choice('MergedOnly'), Choice('FreeBusy'), Choice('FreeBusyMerged'), Choice('Detailed'),
             Choice('DetailedMerged'),
         }, is_required=True),
-        # A string of digits. Each digit points to a position in FREE_BUSY_CHOICES
+        # A string of digits. Each digit points to a position in .fields.FREE_BUSY_CHOICES
         CharField('merged', field_uri='MergedFreeBusy'),
         EWSElementListField('calendar_events', field_uri='CalendarEventArray', value_cls=CalendarEvent),
         # WorkingPeriod is located inside the WorkingPeriodArray element which is inside the WorkingHours element

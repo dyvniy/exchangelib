@@ -10,6 +10,7 @@ import io
 from keyword import kwlist
 import logging
 import os
+import pickle
 import random
 import socket
 import string
@@ -42,7 +43,7 @@ from exchangelib.errors import RelativeRedirect, ErrorItemNotFound, ErrorInvalid
     ErrorFolderNotFound, ErrorInvalidRequest, SOAPError, ErrorInvalidServerVersion, NaiveDateTimeNotAllowed, \
     AmbiguousTimeError, NonExistentTimeError, ErrorUnsupportedPathForQuery, ErrorInvalidPropertyForOperation, \
     ErrorInvalidValueForProperty, ErrorPropertyUpdate, ErrorDeleteDistinguishedFolder, \
-    ErrorNoPublicFolderReplicaAvailable, ErrorServerBusy, ErrorInvalidPropertySet
+    ErrorNoPublicFolderReplicaAvailable, ErrorServerBusy, ErrorInvalidPropertySet, ErrorObjectTypeChanged
 from exchangelib.ewsdatetime import EWSDateTime, EWSDate, EWSTimeZone, UTC, UTC_NOW
 from exchangelib.extended_properties import ExtendedProperty, ExternId
 from exchangelib.fields import BooleanField, IntegerField, DecimalField, TextField, EmailAddressField, URIField, \
@@ -2205,6 +2206,18 @@ class AccountTest(EWSTest):
         finally:
             Calendar.get_distinguished = _orig
 
+    def test_pickle(self):
+        # Test that we can pickle various objects
+        item = Message(folder=self.account.inbox, subject='XXX', categories=self.categories).save()
+        pickle.dumps(item)
+        item.delete()
+        pickle.dumps(self.account.protocol)
+        pickle.dumps(self.account.root)
+        pickle.dumps(self.account.inbox)
+        pickle.dumps(self.account)
+        pickle.dumps(Credentials('XXX', 'YYY'))
+        pickle.dumps(ServiceAccount('XXX', 'YYY'))
+
 
 class AutodiscoverTest(EWSTest):
     def test_magic(self):
@@ -2930,8 +2943,9 @@ class FolderTest(EWSTest):
         f.refresh()
         self.assertEqual(f.name, new_name)
 
-        with self.assertRaises(ValueError):
-            # FolderClass may not be deleted
+        with self.assertRaises(ErrorObjectTypeChanged):
+            # FolderClass may not be changed
+            f.folder_class = get_random_string(16)
             f.save(update_fields=['folder_class'])
 
         # Create a subfolder

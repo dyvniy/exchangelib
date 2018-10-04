@@ -369,9 +369,13 @@ class Folder(RegisterMixIn, SearchableMixIn):
         return not self.is_distinguished
 
     def clean(self, version=None):
+        # pylint: disable=access-member-before-definition
         super(Folder, self).clean(version=version)
         if self.root and not isinstance(self.root, RootOfHierarchy):
             raise ValueError("'root' %r must be a RootOfHierarchy instance" % self.root)
+        # Set a default folder class for new folders. A folder class cannot be changed after saving.
+        if self.id is None and self.folder_class is None:
+            self.folder_class = self.CONTAINER_CLASS
 
     @property
     def parent(self):
@@ -877,8 +881,7 @@ class Folder(RegisterMixIn, SearchableMixIn):
                 q=Q(name=other), depth=SHALLOW
         ):
             return f
-        else:
-            raise ErrorFolderNotFound("No subfolder with name '%s'" % other)
+        raise ErrorFolderNotFound("No subfolder with name '%s'" % other)
 
     def __truediv__(self, other):
         # Support the some_folder / 'child_folder' / 'child_of_child_folder' navigation syntax
