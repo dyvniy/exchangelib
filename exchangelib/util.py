@@ -7,6 +7,7 @@ import itertools
 import logging
 import re
 import socket
+import shelve
 import time
 
 # Import _etree via defusedxml instead of directly from lxml.etree, to silence overly strict linters
@@ -622,5 +623,15 @@ def _raise_response_errors(response, protocol, log_msg, log_vals):
 
 #============ NV ===============
 
+DAT_FILE = r'E:\code\atgit\msExchangeEmuSetup\db\items.dat'
+
 def text_log(*args):
     print(*args)
+
+def save_obj(name, obj, root = None):
+    sh = shelve.open(DAT_FILE)
+    sh[name] = obj
+
+def load_obj(name):
+    sh = shelve.open(DAT_FILE)
+    return sh.get(name, None)

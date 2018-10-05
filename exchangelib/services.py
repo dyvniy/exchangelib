@@ -17,6 +17,7 @@ import datetime
 from itertools import chain
 import logging
 import traceback
+import xml.etree.ElementTree as ET
 
 from six import text_type
 
@@ -35,7 +36,8 @@ from .errors import EWSWarning, TransportError, SOAPError, ErrorTimeoutExpired, 
 from .ewsdatetime import EWSDateTime, NaiveDateTimeNotAllowed
 from .transport import wrap, extra_headers
 from .util import chunkify, create_element, add_xml_child, get_xml_attr, to_xml, post_ratelimited, \
-    xml_to_str, set_xml_value, peek, xml_text_to_value, SOAPNS, TNS, MNS, ENS, ParseError, text_log
+    xml_to_str, set_xml_value, peek, xml_text_to_value, SOAPNS, TNS, MNS, ENS, ParseError, \
+    text_log, save_obj, load_obj
 from .version import EXCHANGE_2010, EXCHANGE_2010_SP2, EXCHANGE_2013, EXCHANGE_2013_SP1
 
 log = logging.getLogger(__name__)
@@ -70,10 +72,12 @@ class EWSService(object):
     # The following two methods are the minimum required to be implemented by subclasses, but the name and number of
     # kwargs differs between services. Therefore, we cannot make these methods abstract.
 
+    #=== test server version & call _get_elements ===
     # @abc.abstractmethod
     # def call(self, **kwargs):
     #     raise NotImplementedError()
 
+    #=== creates request XML ===
     # @abc.abstractmethod
     # def get_payload(self, **kwargs):
     #     raise NotImplementedError()
@@ -146,7 +150,8 @@ class EWSService(object):
         api_versions = [hint.api_version] + [v for v in API_VERSIONS if v != hint.api_version]
         for api_version in api_versions:
             log.debug('Trying API version %s for account %s', api_version, account)
-            text_log('wrap used here ' + str(payload.tag.split('}')[1]))
+            ask_item = payload.tag.split('}')[1]
+            text_log('wrap used here ' + str(ask_item))
             r, session = post_ratelimited(
                 protocol=self.protocol,
                 session=self.protocol.get_session(),
@@ -157,12 +162,19 @@ class EWSService(object):
             self.protocol.release_session(session)
             try:
                 soap_response_payload = to_xml(r.content)
+                save_obj(ask_item, r.content, soap_response_payload)
+                #save_obj(ask_item + '_x', soap_response_payload)
                 #text_log('responce: ' + str(soap_response_payload))
             except ParseError as e:
                 raise SOAPError('Bad SOAP response: %s' % e)
             try:
                 res = self._get_soap_payload(soap_response=soap_response_payload)
-                text_log('responce:',str(len(res)), str(res[0].tag.split('}')[1]))
+                rsp_item = res[0].tag.split('}')[1]
+                text_log('responce:',str(len(res)), str(rsp_item))
+                i = 0
+                for el in res:
+                    save_obj(ask_item + '_' + str(i), ET.tostring(res[i]))
+                    i += 1
             except ErrorInvalidServerVersion:
                 # The guessed server version is wrong. Try the next version
                 log.debug('API version %s was invalid', api_version)
