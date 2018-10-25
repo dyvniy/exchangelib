@@ -223,7 +223,9 @@ class EWSService(object):
         body = soap_response.find('{%s}Body' % SOAPNS)
         if body is None:
             raise MalformedResponseError('No Body element in SOAP response')
-        response = body.find('{%s}%sResponse' % (MNS, cls.SERVICE_NAME))
+        s = '{%s}%sResponse' % (MNS, cls.SERVICE_NAME)
+        print(s)
+        response = body.find(s)
         if response is None:
             fault = body.find('{%s}Fault' % SOAPNS)
             if fault is None:

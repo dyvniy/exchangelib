@@ -31,7 +31,8 @@ class Configuration(object):
         account = Account(primary_smtp_address='john@example.com', credentials=credentials, autodiscover=True)
 
     """
-    def __init__(self, credentials, server=None, has_ssl=False, service_endpoint=None, auth_type=None, version=None):
+    def __init__(self, credentials, server=None, has_ssl=True, service_endpoint=None, auth_type=None, version=None):
+        print('has_ssl =', has_ssl)
         if auth_type is not None and auth_type not in AUTH_TYPE_MAP:
             raise ValueError('Unsupported auth type %s' % auth_type)
         if not (server or service_endpoint):
