@@ -13,6 +13,7 @@ Exchange EWS references:
 from __future__ import unicode_literals
 
 import abc
+from collections import OrderedDict
 import datetime
 from itertools import chain
 import logging
@@ -92,6 +93,8 @@ class EWSService(object):
                 return self._get_elements_in_response(response=response)
             except ErrorServerBusy as e:
                 log.debug('Got ErrorServerBusy (back off %s seconds)', e.back_off)
+                # ErrorServerBusy is very often a symptom of sending too many requests. Scale back if possible.
+                self.protocol.decrease_poolsize()
                 if self.protocol.credentials.fail_fast:
                     raise
                 self.protocol.credentials.back_off(e.back_off)
@@ -119,13 +122,10 @@ class EWSService(object):
                     ErrorNoRespondingCASInDestinationSite,
                     ErrorQuotaExceeded,
                     ErrorTimeoutExpired,
-                    ErrorTooManyObjectsOpened,
                     RateLimitError,
                     UnauthorizedError,
             ):
-                # These are known and understood, and don't require a backtrace
-                # TODO: ErrorTooManyObjectsOpened means there are too many connections to the database. We should be
-                # able to act on this by lowering the self.protocol connection pool size.
+                # These are known and understood, and don't require a backtrace.
                 raise
             except Exception:
                 # This may run from a thread pool, which obfuscates the stack trace. Print trace immediately.
@@ -186,6 +186,11 @@ class EWSService(object):
                 # The guessed server version is wrong for this account. Try the next version
                 log.debug('API version %s was invalid for account %s', api_version, account)
                 continue
+            except ErrorTooManyObjectsOpened as e:
+                # ErrorTooManyObjectsOpened means there are too many connections to the Exchange database. This is very
+                # often a symptom of sending too many requests. Re-raise as an ErrorServerBusy with a default delay.
+                back_off = 300
+                raise ErrorServerBusy(msg='Reraised from %s(%s)' % (e.__class__.__name__, e), back_off=back_off)
             except ResponseMessageError as rme:
                 # We got an error message from Exchange, but we still want to get any new version info from the response
                 try:
@@ -261,6 +266,10 @@ class EWSService(object):
                 except (TypeError, AttributeError):
                     pass
                 raise ErrorServerBusy(msg, back_off=back_off)
+            elif code == 'ErrorSchemaValidation' and msg_xml is not None:
+                violation = get_xml_attr(msg_xml, '{%s}Violation' % TNS)
+                if violation is not None:
+                    msg = '%s %s' % (msg, violation)
             try:
                 raise vars(errors)[code](msg)
             except KeyError:
@@ -368,7 +377,7 @@ class PagingEWSMixIn(EWSService):
         else:
             expected_message_count = 1
         paging_infos = [dict(item_count=0, next_offset=None) for _ in range(expected_message_count)]
-        common_next_offset = 0
+        common_next_offset = kwargs['offset']
         total_item_count = 0
         while True:
             log.debug('%s: Getting items at offset %s (max_items %s)', log_prefix, common_next_offset, max_items)
@@ -379,6 +388,8 @@ class PagingEWSMixIn(EWSService):
                 response = self._get_response_xml(payload=payload)
             except ErrorServerBusy as e:
                 log.debug('Got ErrorServerBusy (back off %s seconds)', e.back_off)
+                # ErrorServerBusy is very often a symptom of sending too many requests. Scale back if possible.
+                self.protocol.decrease_poolsize()
                 if self.protocol.credentials.fail_fast:
                     raise
                 self.protocol.credentials.back_off(e.back_off)
@@ -758,33 +769,38 @@ class UpdateItem(EWSAccountService, EWSPooledMixIn):
         return setitemfield
 
     @staticmethod
-    def _sort_fieldnames(item_model, fieldnames):
-        # Take a list of fieldnames and return the fields in the order they are mentioned in item_class.FIELDS.
+    def _sorted_fields(item_model, fieldnames):
+        # Take a list of fieldnames and return the (unique) fields in the order they are mentioned in item_class.FIELDS.
+        # Checks that all fieldnames are valid.
+        unique_fieldnames = list(OrderedDict.fromkeys(fieldnames))  # Make field names unique ,but keep ordering
         for f in item_model.FIELDS:
-            if f.name in fieldnames:
-                yield f.name
+            if f.name in unique_fieldnames:
+                unique_fieldnames.remove(f.name)
+                yield f
+        if unique_fieldnames:
+            raise ValueError("Field name(s) %s are not valid for a '%s' item" % (
+                ', '.join("'%s'" % f for f in unique_fieldnames), item_model.__name__))
 
     def _get_item_update_elems(self, item, fieldnames):
         from .items import CalendarItem
-        fieldnames_set = set(fieldnames)
+        fieldnames_copy = list(fieldnames)
 
         if item.__class__ == CalendarItem:
             # For CalendarItem items where we update 'start' or 'end', we want to update internal timezone fields
             item.clean_timezone_fields(version=self.account.version)  # Possibly also sets timezone values
             meeting_tz_field, start_tz_field, end_tz_field = CalendarItem.timezone_fields()
             if self.account.version.build < EXCHANGE_2010:
-                if 'start' in fieldnames_set or 'end' in fieldnames_set:
-                    fieldnames_set.add(meeting_tz_field.name)
+                if 'start' in fieldnames_copy or 'end' in fieldnames_copy:
+                    fieldnames_copy.append(meeting_tz_field.name)
             else:
-                if 'start' in fieldnames_set:
-                    fieldnames_set.add(start_tz_field.name)
-                if 'end' in fieldnames_set:
-                    fieldnames_set.add(end_tz_field.name)
+                if 'start' in fieldnames_copy:
+                    fieldnames_copy.append(start_tz_field.name)
+                if 'end' in fieldnames_copy:
+                    fieldnames_copy.append(end_tz_field.name)
         else:
             meeting_tz_field, start_tz_field, end_tz_field = None, None, None
 
-        for fieldname in self._sort_fieldnames(item_model=item.__class__, fieldnames=fieldnames_set):
-            field = item.get_field_by_fieldname(fieldname)
+        for field in self._sorted_fields(item_model=item.__class__, fieldnames=fieldnames_copy):
             if field.is_read_only:
                 raise ValueError('%s is a read-only field' % field.name)
             value = self._get_item_value(item, field, meeting_tz_field, start_tz_field, end_tz_field)
@@ -942,7 +958,8 @@ class FindItem(EWSFolderService, PagingEWSMixIn):
     SERVICE_NAME = 'FindItem'
     element_container_name = '{%s}Items' % TNS
 
-    def call(self, additional_fields, restriction, order_fields, shape, query_string, depth, calendar_view, max_items):
+    def call(self, additional_fields, restriction, order_fields, shape, query_string, depth, calendar_view, max_items,
+             offset):
         """
         Find items in an account.
 
@@ -954,6 +971,7 @@ class FindItem(EWSFolderService, PagingEWSMixIn):
         :param depth: How deep in the folder structure to search for items
         :param calendar_view: If set, returns recurring calendar items unfolded
         :param max_items: the max number of items to return
+        :param offset: the offset relative to the first item in the item collection. Usually 0.
         :return: XML elements for the matching items
         """
         return self._paged_call(payload_func=self.get_payload, max_items=max_items, **dict(
@@ -965,6 +983,7 @@ class FindItem(EWSFolderService, PagingEWSMixIn):
             depth=depth,
             calendar_view=calendar_view,
             page_size=self.chunk_size,
+            offset=offset,
         ))
 
     def get_payload(self, additional_fields, restriction, order_fields, query_string, shape, depth, calendar_view,
@@ -1013,7 +1032,7 @@ class FindFolder(EWSFolderService, PagingEWSMixIn):
     SERVICE_NAME = 'FindFolder'
     element_container_name = '{%s}Folders' % TNS
 
-    def call(self, additional_fields, restriction, shape, depth, max_items):
+    def call(self, additional_fields, restriction, shape, depth, max_items, offset):
         """
         Find subfolders of a folder.
 
@@ -1021,6 +1040,7 @@ class FindFolder(EWSFolderService, PagingEWSMixIn):
         :param shape: The set of attributes to return
         :param depth: How deep in the folder structure to search for folders
         :param max_items: The maximum number of items to return
+        :param offset: the offset relative to the first item in the item collection. Usually 0.
         :return: XML elements for the matching folders
         """
         from .folders import Folder
@@ -1034,6 +1054,7 @@ class FindFolder(EWSFolderService, PagingEWSMixIn):
             shape=shape,
             depth=depth,
             page_size=self.chunk_size,
+            offset=offset,
         )):
             if isinstance(elem, Exception):
                 yield elem
@@ -1101,9 +1122,16 @@ class GetFolder(EWSAccountService):
                 f = folder.from_xml(elem=elem, account=self.account)
             elif isinstance(folder, Folder):
                 f = folder.from_xml(elem=elem, root=folder.root)
+            elif isinstance(folder, DistinguishedFolderId):
+                # We don't know the root, so assume account.root.
+                for folder_cls in self.account.root.WELLKNOWN_FOLDERS:
+                    if folder_cls.DISTINGUISHED_FOLDER_ID == folder.id:
+                        break
+                else:
+                    raise ValueError('Unknown distinguished folder ID: %s', folder.id)
+                f = folder_cls.from_xml(elem=elem, root=self.account.root)
             else:
-                # 'folder' may be a FolderId/DistinguishedFolderId instance. We don't know the root so assume
-                # account.root.
+                # 'folder' is a generic FolderId instance. We don't know the root so assume account.root.
                 f = Folder.from_xml(elem=elem, root=self.account.root)
             if isinstance(folder, DistinguishedFolderId):
                 f.is_distinguished = True
@@ -1415,7 +1443,7 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
     SERVICE_NAME = 'FindPeople'
     element_container_name = '{%s}People' % MNS
 
-    def call(self, folder, additional_fields, restriction, order_fields, shape, query_string, depth, max_items):
+    def call(self, folder, additional_fields, restriction, order_fields, shape, query_string, depth, max_items, offset):
         """
         Find items in an account.
 
@@ -1427,6 +1455,7 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
         :param query_string: a QueryString object
         :param depth: How deep in the folder structure to search for items
         :param max_items: the max number of items to return
+        :param offset: the offset relative to the first item in the item collection. Usually 0.
         :return: XML elements for the matching items
         """
         from .items import Persona, ID_ONLY
@@ -1439,6 +1468,7 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
             shape=shape,
             depth=depth,
             page_size=self.chunk_size,
+            offset=offset,
         ))
         if shape == ID_ONLY and additional_fields is None:
             for p in personas:
@@ -1485,7 +1515,7 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
     def _paged_call(self, payload_func, max_items, **kwargs):
         account = self.account if isinstance(self, EWSAccountService) else None
         log_prefix = 'EWS %s, account %s, service %s' % (self.protocol.service_endpoint, account, self.SERVICE_NAME)
-        item_count = 0
+        item_count = kwargs['offset']
         while True:
             log.debug('%s: Getting items at offset %s', log_prefix, item_count)
             kwargs['offset'] = item_count
@@ -1495,6 +1525,8 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
                 response = self._get_response_xml(payload=payload)
             except ErrorServerBusy as e:
                 log.debug('Got ErrorServerBusy (back off %s seconds)', e.back_off)
+                # ErrorServerBusy is very often a symptom of sending too many requests. Scale back if possible.
+                self.protocol.decrease_poolsize()
                 if self.protocol.credentials.fail_fast:
                     raise
                 self.protocol.credentials.back_off(e.back_off)
@@ -1524,7 +1556,6 @@ class FindPeople(EWSAccountService, PagingEWSMixIn):
         total_items = int(message.find('{%s}TotalNumberOfPeopleInView' % MNS).text)
         first_matching = int(message.find('{%s}FirstMatchingRowIndex' % MNS).text)
         first_loaded = int(message.find('{%s}FirstLoadedRowIndex' % MNS).text)
-        # TODO: Implement paging when we know how it works for this service
         log.debug('%s: Got page with total items %s, first matching %s, first loaded %s ', self.SERVICE_NAME,
                   total_items, first_matching, first_loaded)
         return message, total_items

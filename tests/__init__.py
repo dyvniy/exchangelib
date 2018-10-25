@@ -68,7 +68,7 @@ from exchangelib.recurrence import Recurrence, AbsoluteYearlyPattern, RelativeYe
 from exchangelib.restriction import Restriction, Q
 from exchangelib.settings import OofSettings
 from exchangelib.services import GetServerTimeZones, GetRoomLists, GetRooms, GetAttachment, ResolveNames, GetPersona, \
-    TNS
+    GetFolder, TNS
 from exchangelib.transport import NOAUTH, BASIC, DIGEST, NTLM, wrap, _get_auth_method_from_response
 from exchangelib.util import chunkify, peek, get_redirect_url, to_xml, BOM, get_domain, value_to_xml_text, \
     post_ratelimited, create_element, CONNECTION_ERRORS, PrettyXmlHandler, xml_to_str, ParseError
@@ -2210,13 +2210,24 @@ class AccountTest(EWSTest):
         # Test that we can pickle various objects
         item = Message(folder=self.account.inbox, subject='XXX', categories=self.categories).save()
         pickle.dumps(item)
-        item.delete()
-        pickle.dumps(self.account.protocol)
-        pickle.dumps(self.account.root)
-        pickle.dumps(self.account.inbox)
-        pickle.dumps(self.account)
-        pickle.dumps(Credentials('XXX', 'YYY'))
-        pickle.dumps(ServiceAccount('XXX', 'YYY'))
+        try:
+            for o in (
+                item,
+                self.account.protocol,
+                self.account.root,
+                self.account.inbox,
+                self.account,
+                Credentials('XXX', 'YYY'),
+                ServiceAccount('XXX', 'YYY'),
+            ):
+                pickled_o = pickle.dumps(o)
+                unpickled_o = pickle.loads(pickled_o)
+                self.assertIsInstance(unpickled_o, type(o))
+                if not isinstance(o, (Account, Protocol)):
+                    # __eq__ is not defined on Protocol and Account
+                    self.assertEqual(o, unpickled_o)
+        finally:
+            item.delete()
 
 
 class AutodiscoverTest(EWSTest):
@@ -2715,6 +2726,19 @@ class FolderTest(EWSTest):
         )]).get_folders())
         self.assertEqual(len(folders), 1, sorted(f.name for f in folders))
 
+    def test_get_folders_with_distinguished_id(self):
+        # Test that we return an Inbox instance and not a generic Messages or Folder instance when we call GetFolder
+        # with a DistinguishedFolderId instance with an ID of Inbox.DISTINGUISHED_FOLDER_ID.
+        inbox = list(GetFolder(account=self.account).call(
+            folders=[DistinguishedFolderId(
+                id=Inbox.DISTINGUISHED_FOLDER_ID,
+                mailbox=Mailbox(email_address=self.account.primary_smtp_address))
+            ],
+            shape='IdOnly',
+            additional_fields=[],
+        ))[0]
+        self.assertIsInstance(inbox, Inbox)
+
     def test_folder_grouping(self):
         # If you get errors here, you probably need to fill out [folder class].LOCALIZED_NAMES for your locale.
         for f in self.account.root.walk():
@@ -2756,34 +2780,55 @@ class FolderTest(EWSTest):
 
     def test_counts(self):
         # Test count values on a folder
-        # TODO: Subfolder creation isn't supported yet, so we can't test that child_folder_count changes
-        self.assertGreaterEqual(self.account.inbox.total_count, 0)
-        if self.account.inbox.unread_count is not None:
-            self.assertGreaterEqual(self.account.inbox.unread_count, 0)
-        self.assertGreaterEqual(self.account.inbox.child_folder_count, 0)
+        f = Folder(parent=self.account.inbox, name=get_random_string(16)).save()
+        f.refresh()
+
+        self.assertEqual(f.total_count, 0)
+        self.assertEqual(f.unread_count, 0)
+        self.assertEqual(f.child_folder_count, 0)
         # Create some items
         items = []
         for i in range(3):
             subject = 'Test Subject %s' % i
-            item = Message(account=self.account, folder=self.account.inbox, is_read=False, subject=subject,
-                           categories=self.categories)
+            item = Message(account=self.account, folder=f, is_read=False, subject=subject, categories=self.categories)
             item.save()
             items.append(item)
-        # Refresh values
-        self.account.inbox.refresh()
-        self.assertGreaterEqual(self.account.inbox.total_count, 3)
-        self.assertGreaterEqual(self.account.inbox.unread_count, 3)
-        self.assertGreaterEqual(self.account.inbox.child_folder_count, 0)
+        # Refresh values and see that total_count and unread_count changes
+        f.refresh()
+        self.assertEqual(f.total_count, 3)
+        self.assertEqual(f.unread_count, 3)
+        self.assertEqual(f.child_folder_count, 0)
         for i in items:
             i.is_read = True
             i.save()
         # Refresh values and see that unread_count changes
-        self.account.inbox.refresh()
-        self.assertGreaterEqual(self.account.inbox.total_count, 3)
-        if self.account.inbox.unread_count is not None:
-            self.assertGreaterEqual(self.account.inbox.unread_count, 0)
-        self.assertGreaterEqual(self.account.inbox.child_folder_count, 0)
+        f.refresh()
+        self.assertEqual(f.total_count, 3)
+        self.assertEqual(f.unread_count, 0)
+        self.assertEqual(f.child_folder_count, 0)
         self.bulk_delete(items)
+        # Refresh values and see that total_count changes
+        f.refresh()
+        self.assertEqual(f.total_count, 0)
+        self.assertEqual(f.unread_count, 0)
+        self.assertEqual(f.child_folder_count, 0)
+        # Create some subfolders
+        subfolders = []
+        for i in range(3):
+            subfolders.append(Folder(parent=f, name=get_random_string(16)).save())
+        # Refresh values and see that child_folder_count changes
+        f.refresh()
+        self.assertEqual(f.total_count, 0)
+        self.assertEqual(f.unread_count, 0)
+        self.assertEqual(f.child_folder_count, 3)
+        for sub_f in subfolders:
+            sub_f.delete()
+        # Refresh values and see that child_folder_count changes
+        f.refresh()
+        self.assertEqual(f.total_count, 0)
+        self.assertEqual(f.unread_count, 0)
+        self.assertEqual(f.child_folder_count, 0)
+        f.delete()
 
     def test_refresh(self):
         # Test that we can refresh folders
@@ -4528,6 +4573,21 @@ class BaseItemTest(EWSTest):
         item.refresh()
         self.assertEqual(item.subject, 'XXX')
         self.assertNotEqual(item.body, 'YYY')
+
+        # Test invalid 'update_fields' input
+        with self.assertRaises(ValueError) as e:
+            item.save(update_fields=['xxx'])
+        self.assertEqual(
+            e.exception.args[0],
+            "Field name(s) 'xxx' are not valid for a '%s' item" % self.ITEM_CLASS.__name__
+        )
+        with self.assertRaises(ValueError) as e:
+            item.save(update_fields='subject')
+        self.assertEqual(
+            e.exception.args[0],
+            "Field name(s) 's', 'u', 'b', 'j', 'e', 'c', 't' are not valid for a '%s' item" % self.ITEM_CLASS.__name__
+        )
+
         self.bulk_delete([item])
 
     def test_soft_delete(self):
@@ -5842,10 +5902,6 @@ class ContactsTest(BaseItemTest):
     TEST_FOLDER = 'contacts'
     FOLDER_CLASS = Contacts
     ITEM_CLASS = Contact
-
-    def test_paging(self):
-        # TODO: This test throws random ErrorIrresolvableConflict errors on item creation for some reason.
-        pass
 
     def test_distribution_lists(self):
         dl = DistributionList(folder=self.test_folder, display_name=get_random_string(255), categories=self.categories)

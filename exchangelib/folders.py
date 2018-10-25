@@ -175,7 +175,7 @@ class FolderCollection(SearchableMixIn):
         return tuple(item_model for folder in self.folders for item_model in folder.supported_item_models)
 
     def find_items(self, q, shape=ID_ONLY, depth=SHALLOW, additional_fields=None, order_fields=None,
-                   calendar_view=None, page_size=None, max_items=None):
+                   calendar_view=None, page_size=None, max_items=None, offset=0):
         """
         Private method to call the FindItem service
 
@@ -189,6 +189,7 @@ class FolderCollection(SearchableMixIn):
         :param calendar_view: a CalendarView instance, if any
         :param page_size: the requested number of items per page
         :param max_items: the max number of items to return
+        :param offset: the offset relative to the first item in the item collection
         :return: a generator for the returned item IDs or items
         """
         if shape not in SHAPE_CHOICES:
@@ -235,6 +236,7 @@ class FolderCollection(SearchableMixIn):
             depth=depth,
             calendar_view=calendar_view,
             max_items=calendar_view.max_items if calendar_view else max_items,
+            offset=offset,
         )
         if shape == ID_ONLY and additional_fields is None:
             for i in items:
@@ -259,7 +261,7 @@ class FolderCollection(SearchableMixIn):
                 )
         return additional_fields
 
-    def find_folders(self, q=None, shape=ID_ONLY, depth=DEEP, page_size=None):
+    def find_folders(self, q=None, shape=ID_ONLY, depth=DEEP, page_size=None, max_items=None, offset=0):
         # 'depth' controls whether to return direct children or recurse into sub-folders
         if not self.account:
             raise ValueError('Folder must have an account')
@@ -275,13 +277,13 @@ class FolderCollection(SearchableMixIn):
             log.debug('Folder list is empty')
             return []
         additional_fields = self._get_folder_fields()
-        # TODO: Support the Restriction class for folders, too
         return FindFolder(account=self.account, folders=self.folders, chunk_size=page_size).call(
                 additional_fields=additional_fields,
                 restriction=restriction,
                 shape=shape,
                 depth=depth,
-                max_items=None,
+                max_items=max_items,
+                offset=offset,
         )
 
     def get_folders(self):
@@ -603,7 +605,7 @@ class Folder(RegisterMixIn, SearchableMixIn):
         )
 
     def find_people(self, q, shape=ID_ONLY, depth=SHALLOW, additional_fields=None, order_fields=None, page_size=None,
-                    max_items=None):
+                    max_items=None, offset=0):
         """
         Private method to call the FindPeople service
 
@@ -615,6 +617,7 @@ class Folder(RegisterMixIn, SearchableMixIn):
         :param order_fields: the SortOrder fields, if any
         :param page_size: the requested number of items per page
         :param max_items: the max number of items to return
+        :param offset: the offset relative to the first item in the item collection
         :return: a generator for the returned personas
         """
         if shape not in SHAPE_CHOICES:
@@ -648,6 +651,7 @@ class Folder(RegisterMixIn, SearchableMixIn):
                 query_string=query_string,
                 depth=depth,
                 max_items=max_items,
+                offset=offset,
         )
         for p in personas:
             if isinstance(p, Exception):
@@ -771,7 +775,7 @@ class Folder(RegisterMixIn, SearchableMixIn):
             # Some folders are returned with an empty 'DisplayName' element. Assign a default name to them.
             # TODO: Only do this if we actually requested the 'name' field.
             kwargs['name'] = cls.DISTINGUISHED_FOLDER_ID
-        elem.clear()
+        cls._clear(elem)
         folder_cls = cls
         if cls == Folder:
             # We were called on the generic Folder class. Try to find a more specific class to return objects as.
@@ -1563,7 +1567,7 @@ class RootOfHierarchy(Folder):
             # Some folders are returned with an empty 'DisplayName' element. Assign a default name to them.
             # TODO: Only do this if we actually requested the 'name' field.
             kwargs['name'] = cls.DISTINGUISHED_FOLDER_ID
-        elem.clear()
+        cls._clear(elem)
         return cls(account=account, id=fld_id, changekey=changekey, **kwargs)
 
     @classmethod
@@ -1684,17 +1688,19 @@ class PublicFoldersRoot(RootOfHierarchy):
     supported_from = EXCHANGE_2007_SP1
 
     def get_children(self, folder):
-        # EWS does not allow deep traversal of public folders, so self._folders_map will only polulate the top-level
+        # EWS does not allow deep traversal of public folders, so self._folders_map will only populate the top-level
         # subfolders. To traverse public folders at arbitrary depth, we need to get child folders on demand.
 
         # Let's check if this folder already has any cached children. If so, assume we can just return those.
-        # TODO: We should also return early here if we already checked that the folder does not have children. This is
-        # not possible with the current folder cache model.
         children = list(super(PublicFoldersRoot, self).get_children(folder=folder))
         if children:
             # Return a generator like our parent does
             for f in children:
                 yield f
+            return
+
+        # Also return early if the server told us that there are no child folders.
+        if folder.child_folder_count == 0:
             return
 
         children_map = {}

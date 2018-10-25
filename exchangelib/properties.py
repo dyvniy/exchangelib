@@ -7,6 +7,7 @@ import datetime
 import logging
 import struct
 
+from future.utils import PY2
 from six import text_type
 
 from .fields import SubField, TextField, EmailAddressField, ChoiceField, DateTimeField, EWSElementField, MailboxField, \
@@ -111,10 +112,17 @@ class EWSElement(object):
             val = getattr(self, f.name)
             setattr(self, f.name, f.clean(val, version=version))
 
+    @staticmethod
+    def _clear(elem):
+        # Clears an XML element to reduce memory consumption
+        elem.clear()
+        while elem.getprevious() is not None:
+            del elem.getparent()[0]
+
     @classmethod
     def from_xml(cls, elem, account):
         kwargs = {f.name: f.from_xml(elem=elem, account=account) for f in cls.FIELDS}
-        elem.clear()
+        cls._clear(elem)
         return cls(**kwargs)
 
     def to_xml(self, version):
@@ -204,6 +212,22 @@ class EWSElement(object):
         return hash(
             tuple(tuple(getattr(self, f.name) or ()) if f.is_list else getattr(self, f.name) for f in self.FIELDS)
         )
+
+    if PY2:
+        def __getstate__(self):
+            try:
+                return self.__dict__.copy()
+            except AttributeError:
+                # This is a class where __slots__ is defined
+                return {k: getattr(self, k) for k in self.__class__.__slots__}
+
+        def __setstate__(self, state):
+            try:
+                self.__dict__.update(state)
+            except AttributeError:
+                # This is a class where __slots__ is defined
+                for k, v in state.items():
+                    setattr(self, k, v)
 
     def __str__(self):
         return self.__class__.__name__ + '(%s)' % ', '.join(
@@ -682,7 +706,7 @@ class FreeBusyView(EWSElement):
                 kwargs[f.name] = f.from_xml(elem=elem.find('{%s}WorkingHours' % TNS), account=account)
                 continue
             kwargs[f.name] = f.from_xml(elem=elem, account=account)
-        elem.clear()
+        cls._clear(elem)
         return cls(**kwargs)
 
 
@@ -716,7 +740,7 @@ class Room(Mailbox):
             mailbox_type=get_xml_attr(id_elem, '{%s}MailboxType' % TNS),
             item_id=ItemId.from_xml(elem=item_id_elem, account=account) if item_id_elem else None,
         )
-        elem.clear()
+        cls._clear(elem)
         return cls(**kwargs)
 
 
