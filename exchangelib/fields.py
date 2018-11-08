@@ -656,7 +656,8 @@ class CharField(TextField):
                         raise ValueError("'%s' value '%s' exceeds length %s" % (self.name, v, self.max_length))
             else:
                 if len(value) > self.max_length:
-                    raise ValueError("'%s' value '%s' exceeds length %s" % (self.name, value, self.max_length))
+                    return value[:255]
+                    #raise ValueError("'%s' value '%s' exceeds length %s" % (self.name, value, self.max_length))
         return value
 
 
