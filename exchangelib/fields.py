@@ -59,6 +59,10 @@ EXTRA_WEEKDAY_OPTIONS = (DAY, WEEK_DAY, WEEKEND_DAY)
 # DaysOfWeek enum: See https://msdn.microsoft.com/en-us/library/office/ee332417(v=exchg.150).aspx
 WEEKDAYS = WEEKDAY_NAMES + EXTRA_WEEKDAY_OPTIONS
 
+def convert(val, name, vcls):
+    s = "Cannot convert value '%s' on field '%s' to type %s" % (val, name, vcls)
+    log.warning(s)
+    raise Exception(s)
 
 def split_field_path(field_path):
     """Return the individual parts of a field path that may, apart from the fieldname, have label and subfield parts.
@@ -383,9 +387,11 @@ class BooleanField(FieldURIField):
                 return {
                     'true': True,
                     'false': False,
+                    '1': True,
+                    '0': False,
                 }[val]
             except KeyError:
-                log.warning("Cannot convert value '%s' on field '%s' to type %s", val, self.name, self.value_cls)
+                convert(val, self.name, self.value_cls)
                 return None
         return self.default
 
@@ -421,7 +427,7 @@ class IntegerField(FieldURIField):
             try:
                 return self.value_cls(val)
             except (ValueError, InvalidOperation):
-                log.warning("Cannot convert value '%s' on field '%s' to type %s", val, self.name, self.value_cls)
+                convert(val, self.name, self.value_cls)
                 return None
         return self.default
 
@@ -471,7 +477,7 @@ class EnumField(IntegerField):
                     return [self.enum.index(v) + 1 for v in val.split(' ')]
                 return self.enum.index(val) + 1
             except ValueError:
-                log.warning("Cannot convert value '%s' on field '%s' to type %s", val, self.name, self.value_cls)
+                convert(val, self.name, self.value_cls)
                 return None
         return self.default
 
@@ -494,7 +500,7 @@ class EnumAsIntField(EnumField):
             try:
                 return int(val)
             except ValueError:
-                log.warning("Cannot convert value '%s' on field '%s' to type %s", val, self.name, self.value_cls)
+                convert(val, self.name, self.value_cls)
                 return None
         return self.default
 
@@ -518,7 +524,7 @@ class Base64Field(FieldURIField):
             try:
                 return base64.b64decode(val)
             except (TypeError, binascii.Error):
-                log.warning("Cannot convert value '%s' on field '%s' to type %s", val, self.name, self.value_cls)
+                convert(val, self.name, self.value_cls)
                 return None
         return self.default
 
@@ -536,7 +542,7 @@ class DateField(FieldURIField):
             try:
                 return self.value_cls.from_string(val)
             except ValueError:
-                log.warning("Cannot convert value '%s' on field '%s' to type %s", val, self.name, self.value_cls)
+                convert(val, self.name, self.value_cls)
                 return None
         return self.default
 
