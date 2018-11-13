@@ -623,15 +623,18 @@ def _raise_response_errors(response, protocol, log_msg, log_vals):
 
 #============ NV ===============
 
-DAT_FILE = r'E:\code\atgit\msExchangeEmuSetup\db\items.dat'
+DAT_FILE = r'.\items.dat'
 
 def text_log(*args):
     print(*args)
 
 def save_obj(name, obj, root = None):
-    sh = shelve.open(DAT_FILE)
-    sh[name] = obj
+    pass
+    #sh = shelve.open(DAT_FILE)
+    #sh[name] = obj
 
 def load_obj(name):
-    sh = shelve.open(DAT_FILE)
-    return sh.get(name, None)
+    pass
+    #sh = shelve.open(DAT_FILE)
+    #return sh.get(name, None)
+    return None
