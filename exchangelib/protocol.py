@@ -233,8 +233,8 @@ class Protocol(with_metaclass(CachingProtocol, BaseProtocol)):
         scheme = 'https' if self.has_ssl else 'http'
         self.wsdl_url = '%s://%s/EWS/Services.wsdl' % (scheme, self.server)
         self.messages_url = '%s://%s/EWS/messages.xsd' % (scheme, self.server)
-        #self.types_url = '%s://%s/EWS/types.xsd' % (scheme, self.server)
-        self.types_url = '%s://%s/SkinFiles//*/types.xsd' % (scheme, self.server) #http://localhost:8010/Master/Domains/WebSkinFile/types.xsd?SubSkin=&
+        self.types_url = '%s://%s/EWS/types.xsd' % (scheme, self.server)
+        #self.types_url = '%s://%s/SkinFiles//*/types.xsd' % (scheme, self.server) #http://localhost:8010/Master/Domains/WebSkinFile/types.xsd?SubSkin=&
 
         # Autodetect authentication type if necessary
         # pylint: disable=access-member-before-definition
